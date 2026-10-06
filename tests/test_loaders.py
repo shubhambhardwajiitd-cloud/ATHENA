@@ -252,6 +252,7 @@ def test_real_objective_data_loads_exact_ids():
     loaded = load_objectives(directory)
 
     assert {item.id for item in loaded} == {
+        "mock-indirect-injection",
         "mock-system-prompt-leak",
         "mock-tool-misuse",
     }

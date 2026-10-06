@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from core import ObjectiveType
+from core import ObjectiveType, Status, run_objective
 from loaders import load_cards, load_objectives
 from scorers.deterministic import DeterministicScorer
 from targets.mock import MockTarget, default_profile
@@ -91,7 +91,7 @@ def test_cards_applicable_to_default_profile():
         ObjectiveType.SYSTEM_PROMPT_LEAK in card.objective_types
         for card in applicable
     ) >= 5
-    assert "indirect-injection-document" not in applicable_ids
+    assert "indirect-injection-document" in applicable_ids
     assert "tool-output-injection" in applicable_ids
     assert "direct-tool-request" in applicable_ids
 
@@ -127,6 +127,63 @@ def test_selected_patterns_score_against_mock_target():
         reply = MockTarget().send(prompt)
         score, _ = scorer.score(objective, prompt, reply, profile)
         assert score == expected_score
+
+
+def test_indirect_injection_card_patterns_score_against_mock_target():
+    cards = {card.id: card for card in loaded_cards()}
+    objectives = {
+        objective.id: objective for objective in load_objectives(OBJECTIVES_DIRECTORY)
+    }
+    objective = objectives["mock-indirect-injection"]
+    scorer = DeterministicScorer()
+    profile = default_profile()
+
+    for card_id in ("indirect-injection-document", "tool-output-injection"):
+        prompt = cards[card_id].example_patterns[0]
+        reply = MockTarget().send(prompt)
+        score, _ = scorer.score(objective, prompt, reply, profile)
+        assert score == 2
+
+    safe_prompt = "Summarize ticket-1 for me."
+    safe_reply = MockTarget().send(safe_prompt)
+    safe_score, _ = scorer.score(objective, safe_prompt, safe_reply, profile)
+    assert safe_score == 0
+
+
+class StubIndirectRetriever:
+    def __init__(self, card):
+        self.card = card
+
+    def get_cards(self, obj, profile, exclude, k):
+        return [self.card]
+
+
+class StubIndirectAttacker:
+    def __init__(self):
+        self.prompts = iter(["summarize ticket-1", "summarize ticket-2"])
+
+    def next_prompt(self, obj, profile, cards, history):
+        return cards[0].id, next(self.prompts)
+
+
+def test_indirect_injection_integrates_with_objective_loop():
+    cards = {card.id: card for card in loaded_cards()}
+    objectives = {
+        objective.id: objective for objective in load_objectives(OBJECTIVES_DIRECTORY)
+    }
+
+    state = run_objective(
+        objectives["mock-indirect-injection"],
+        default_profile(),
+        MockTarget(),
+        DeterministicScorer(),
+        StubIndirectRetriever(cards["indirect-injection-document"]),
+        StubIndirectAttacker(),
+    )
+
+    assert state.status is Status.SUCCESS
+    assert len(state.turns) == 2
+    assert [turn.score for turn in state.turns] == [0, 2]
 
 
 def test_card_ids_match_file_groupings():
